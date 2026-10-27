@@ -1,0 +1,13 @@
+tensorflow
+keras
+Pillow
+ultralytics
+mlflow
+apache-airflow
+streamlit
+fastapi
+uvicorn
+pandas
+matplotlib
+seaborn
+scikit-learn
