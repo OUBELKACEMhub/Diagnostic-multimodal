@@ -2,21 +2,38 @@ from fastapi import FastAPI, UploadFile, File
 import numpy as np
 from PIL import Image
 import io
+import json
+from pathlib import Path
 import tensorflow as tf
 from ultralytics import YOLO
 
 app = FastAPI(title="Brain Tumor API")
 
-# Chargement des modèles
-clf_model = tf.keras.models.load_model("models/inception_brain_tumor.keras")
-det_model = YOLO("models/yolov8_best.pt")
-classes = ["glioma", "meningioma", "no_tumor", "pituitary"]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+MODELS_DIR = PROJECT_ROOT / "models"
+clf_model = tf.keras.models.load_model(MODELS_DIR / "final_model.keras")
+with (MODELS_DIR / "class_names.json").open(encoding="utf-8") as file:
+    classes = json.load(file)
+
+_det_model = None
+
+
+def get_detection_model():
+    global _det_model
+    if _det_model is None:
+        model_path = MODELS_DIR / "yolov8_best.pt"
+        if not model_path.is_file():
+            raise FileNotFoundError(
+                f"Poids YOLO manquants : {model_path}. Entraînez d'abord le modèle de détection."
+            )
+        _det_model = YOLO(str(model_path))
+    return _det_model
 
 @app.post("/predict/classify")
 async def classify_image(file: UploadFile = File(...)):
     contents = await file.read()
     image = Image.open(io.BytesIO(contents)).convert("RGB").resize((224, 224))
-    img_array = np.array(image)
+    img_array = np.asarray(image, dtype=np.float32)
     img_array = tf.keras.applications.inception_v3.preprocess_input(img_array)
     img_array = np.expand_dims(img_array, axis=0)
 
@@ -30,6 +47,7 @@ async def classify_image(file: UploadFile = File(...)):
 async def detect_tumor(file: UploadFile = File(...)):
     contents = await file.read()
     image = Image.open(io.BytesIO(contents)).convert("RGB")
+    det_model = get_detection_model()
     results = det_model(image)
     
     detections = []

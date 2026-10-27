@@ -1,7 +1,17 @@
 
 
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Conv2D, MaxPooling2D, Dropout, Dense, GlobalAveragePooling2D, BatchNormalization
+from tensorflow.keras.layers import (
+    BatchNormalization,
+    Conv2D,
+    Dense,
+    Dropout,
+    GlobalAveragePooling2D,
+    Input,
+    MaxPooling2D,
+)
+from tensorflow.keras.models import Model
+from tensorflow.keras.applications import InceptionV3
 
 
 def conception_modele_cnn(input_shape=(224, 224, 3), nb_classes=4):
@@ -49,4 +59,39 @@ def compiler_modele(model, learning_rate=0.0001):
         metrics=["accuracy"]
     )
     model.summary()
+    return model
+
+
+def build_inception_model(num_classes, input_shape=(224, 224, 3)):
+    """Construit un classificateur InceptionV3 prêt pour l'extraction de caractéristiques."""
+    base_model = InceptionV3(
+        include_top=False,
+        weights="imagenet",
+        input_shape=input_shape,
+    )
+    base_model.trainable = False
+
+    inputs = Input(shape=input_shape)
+    features = base_model(inputs, training=False)
+    features = GlobalAveragePooling2D()(features)
+    features = Dropout(0.3)(features)
+    outputs = Dense(num_classes, activation="softmax")(features)
+    model = Model(inputs=inputs, outputs=outputs)
+
+    return model, base_model
+
+
+def prepare_for_fine_tuning(model, base_model, unfreeze_from_layer=249):
+    """Dégèle la fin du réseau InceptionV3 en laissant les couches BatchNormalization figées."""
+    if not 0 <= unfreeze_from_layer < len(base_model.layers):
+        raise ValueError(
+            f"unfreeze_from_layer doit être compris entre 0 et {len(base_model.layers) - 1}."
+        )
+
+    base_model.trainable = True
+    for index, layer in enumerate(base_model.layers):
+        layer.trainable = (
+            index >= unfreeze_from_layer and not isinstance(layer, BatchNormalization)
+        )
+
     return model

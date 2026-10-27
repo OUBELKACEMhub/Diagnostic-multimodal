@@ -1,61 +1,85 @@
-import os
+import json
+from pathlib import Path
+
 import mlflow
 import mlflow.keras
 import tensorflow as tf
-from src.data_preprocessing import load_datasets
-from src.model_architecture import build_inception_model, prepare_for_fine_tuning
+
+from src.data_preprocessing import (
+    creer_datasets_images,
+    inspecter_dataset_images,
+    repartir_images,
+)
 from src.evaluate import evaluate_classifier
+from src.model_architecture import build_inception_model, prepare_for_fine_tuning
+
 
 def run_training():
-    mlflow.set_experiment("Brain_Tumor_InceptionV3")
-    
-    data_dir = "data/split_data"
-    batch_size = 32
-    train_ds, val_ds, test_ds = load_datasets(data_dir, batch_size=batch_size)
-    class_names = os.listdir(os.path.join(data_dir, "train"))
-    num_classes = len(class_names)
+    project_root = Path(__file__).resolve().parents[1]
+    raw_dir = project_root / "data" / "raw"
+    images, invalid_files = inspecter_dataset_images(raw_dir)
+    if images.empty:
+        raise ValueError(f"Aucune image valide trouvée dans {raw_dir}.")
 
-    with mlflow.start_run(run_name="InceptionV3_Two_Phase_Training"):
-        # Phase 1: Feature Extraction
-        lr_fe = 1e-3
-        epochs_fe = 10
-        mlflow.log_params({"lr_feature_extraction": lr_fe, "epochs_fe": epochs_fe, "batch_size": batch_size})
+    repartitions = repartir_images(images, taille_test=0.15, taille_validation=0.15, seed=42)
+    datasets, split_workspace, class_names, split_counts = creer_datasets_images(
+        repartitions,
+        taille_image=224,
+        taille_lot=32,
+        seed=42,
+    )
+    try:
+        models_dir = project_root / "models"
+        models_dir.mkdir(parents=True, exist_ok=True)
+        with (models_dir / "class_names.json").open("w", encoding="utf-8") as file:
+            json.dump(class_names, file, ensure_ascii=False, indent=2)
 
-        model, base_model = build_inception_model(num_classes)
-        model.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=lr_fe),
-            loss="sparse_categorical_crossentropy",
-            metrics=["accuracy"]
-        )
+        mlflow.set_experiment("Brain_Tumor_InceptionV3")
+        with mlflow.start_run(run_name="InceptionV3_Two_Phase_Training"):
+            mlflow.log_params(
+                {
+                    "lr_feature_extraction": 1e-3,
+                    "epochs_feature_extraction": 10,
+                    "lr_fine_tuning": 1e-5,
+                    "epochs_fine_tuning": 10,
+                    "batch_size": 32,
+                    "class_count": len(class_names),
+                    "invalid_files": len(invalid_files),
+                }
+            )
+            mlflow.log_metrics(
+                {f"{split}_images": count for split, count in split_counts.items()}
+            )
 
-        print("[INFO] Lancement Phase 1 : Feature Extraction...")
-        model.fit(train_ds, validation_data=val_ds, epochs=epochs_fe)
+            model, base_model = build_inception_model(len(class_names))
+            model.compile(
+                optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
+                loss="sparse_categorical_crossentropy",
+                metrics=["accuracy"],
+            )
+            print("[INFO] Lancement Phase 1 : extraction des caractéristiques...")
+            model.fit(datasets["train"], validation_data=datasets["validation"], epochs=10)
 
-        # Phase 2: Fine-Tuning
-        lr_ft = 1e-5
-        epochs_ft = 10
-        mlflow.log_params({"lr_fine_tuning": lr_ft, "epochs_ft": epochs_ft})
+            model = prepare_for_fine_tuning(model, base_model, unfreeze_from_layer=249)
+            model.compile(
+                optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5),
+                loss="sparse_categorical_crossentropy",
+                metrics=["accuracy"],
+            )
+            print("[INFO] Lancement Phase 2 : fine-tuning...")
+            model.fit(datasets["train"], validation_data=datasets["validation"], epochs=10)
 
-        model = prepare_for_fine_tuning(model, base_model, unfreeze_from_layer=249)
-        model.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=lr_ft),
-            loss="sparse_categorical_crossentropy",
-            metrics=["accuracy"]
-        )
+            metrics = evaluate_classifier(model, datasets["test"], class_names)
+            mlflow.log_metrics(metrics)
+            mlflow.log_artifact("confusion_matrix.png")
 
-        print("[INFO] Lancement Phase 2 : Fine-Tuning...")
-        model.fit(train_ds, validation_data=val_ds, epochs=epochs_ft)
+            model_path = models_dir / "final_model.keras"
+            model.save(model_path)
+            mlflow.keras.log_model(model, "model")
+            print(f"[INFO] Modèle sauvegardé : {model_path}")
+    finally:
+        split_workspace.cleanup()
 
-        # Évaluation finale sur test
-        metrics = evaluate_classifier(model, test_ds, class_names)
-        mlflow.log_metrics(metrics)
-        mlflow.log_artifact("confusion_matrix.png")
-
-        # Sauvegarde
-        os.makedirs("models", exist_ok=True)
-        model.save("models/inception_brain_tumor.keras")
-        mlflow.keras.log_model(model, "model")
-        print("[INFO] Modèle sauvegardé avec succès.")
 
 if __name__ == "__main__":
     run_training()

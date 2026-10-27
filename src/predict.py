@@ -1,23 +1,25 @@
 
-import cv2
 import numpy as np
 from PIL import Image
+from tensorflow.keras.applications.inception_v3 import preprocess_input
+
+
+def _prepare_image(image, taille_image):
+    image = image.convert("RGB").resize((taille_image, taille_image))
+    image_array = np.asarray(image, dtype=np.float32)
+    image_array = preprocess_input(image_array)
+    return np.expand_dims(image_array, axis=0)
 
 
 def predict_image(path, model, le, taille_image=224):
     """
-    Predis la classe d'une image depuis son chemin.
+    Prédit la classe d'une image depuis son chemin.
     Exemple:
-        label, conf = predict_image("data/raw/glioma/image.jpg", model, le)
-        print(label, conf)  # "glioma", 92.5
+        label, conf = predict_image("data/raw/Train/Glioma/images/image.jpg", model, le)
+        print(label, conf)  # "Glioma", 92.5
     """
-    img = cv2.imread(str(path))
-    if img is None:
-        raise ValueError(f"Impossible de lire : {path}")
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img = cv2.resize(img, (taille_image, taille_image))
-    img = img.astype("float32") / 255.0
-    img = np.expand_dims(img, axis=0)  # ajoute dimension batch
+    with Image.open(path) as image:
+        img = _prepare_image(image, taille_image)
 
     pred = model.predict(img, verbose=0)[0]
     idx = int(np.argmax(pred))
@@ -28,13 +30,10 @@ def predict_image(path, model, le, taille_image=224):
 
 def predict_from_pil(pil_image, model, le, taille_image=224):
     """
-    Predis depuis une image PIL (utilise par Streamlit).
+    Prédit depuis une image PIL (utilisé par Streamlit).
     Retourne (label, confiance, {classe: proba}).
     """
-    img = np.array(pil_image.convert("RGB"))
-    img = cv2.resize(img, (taille_image, taille_image))
-    img = img.astype("float32") / 255.0
-    img = np.expand_dims(img, axis=0)
+    img = _prepare_image(pil_image, taille_image)
 
     pred = model.predict(img, verbose=0)[0]
     idx = int(np.argmax(pred))
